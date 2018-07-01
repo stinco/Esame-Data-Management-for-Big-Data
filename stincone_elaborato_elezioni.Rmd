@@ -1,0 +1,1051 @@
+---
+title: "Elezioni politiche italiane del 2018"
+author: "Leonardo Stincone"
+date: "28 giugno 2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.kable.NA = '')
+```
+
+```{r librerie, include=F}
+library(tidyverse)
+library(maptools)
+library(RColorBrewer)
+library(colorspace)
+library(ggmap)
+library(viridis)
+library(stringi) #Mi serve per eliminare gli accenti
+library(gridExtra) #Mi serve per grid.arrange
+library(scales) #Mi serve per trans_new()
+# library(rgeos) # Serve per semplificare i poligoni con l'algoritmo di Douglas-Peuker
+# library(ggrepel)
+library(plotly)
+library(xtable)
+```
+
+```{r preparazioneDati, include=F, cache=T}
+source("script1.1_preparazioneDati_20180627.R")
+source("script1.2_preparazioneRisultati_20180627.R")
+source("script1.3_preparazioneDatiMappeMute_20180627.R")
+```
+
+
+# Introduzione
+
+Nella presente trattazione è stata affrontata l'analisi dei risultati delle **elezioni politiche italiane del 2018**.
+
+## Sistema di voto, suddivisione geografica e quadro politico
+Domenica 4 marzo 2018 si sono svolte le elezioni per il rinnovo dei due rami del Parlamento Italiano: la **Camera dei Deputati** e il **Senato**.
+Si è votato per eleggere i 630 deputati e i 315 senatori. La legge elettorale adottata è stata la [Legge Rosato](https://it.wikipedia.org/wiki/Legge_Rosato), comunemente nota come *Rosatellum*. La legge è stata applicata per i due rami con la medesima formula elettorale, salvo qualche piccola differenza per quanto riguarda le soglie di sbarramento.
+
+Il *Rosatellum* è una legge elettorale mista, cioè prevede che una parte dei seggi siano assegnati con un **sistema proporzionale** e una parte con un **sistema maggioritario**, come mostrato in figura.
+
+<center>
+![](Immagini\Cattura_seggiRosatellum.PNG)
+</center>
+
+Per applicare questa legge elettorale, il territorio italiano è stato suddiviso in **circoscrizioni** (corrispondenti a regioni amministrative o, nel caso di regioni particolarmente grandi, parte di esse), a loro volta divise in **collegi plurinominali**, a loro volta divisi in **collegi uninominali**. La partizione del territorio per l'elezione della Camera dei Deputati non corrisponde alla partizione per l'elezione del Senato.
+
+In questa trattazione vengono analizzati solo i risultati relativi all'elezione della Camera dei Deputati, in quanto, anche per merito dell'adozione dello stesso sistema di voto per i due rami, non vi sono sostanziali differenze nei risultati. Si noti che l'unica differenza per quanto riguarda le basi elettorali dei due rami è che per la Camera si acquisisce il diritto di voto al compimento dei 18 anni, mentre per il Senato si acquisisce al compimento dei 25 anni, ma, [anche per ragioni demografiche](https://www.tuttitalia.it/statistiche/popolazione-eta-sesso-stato-civile-2017/), la fascia d'età 18-24 è poco rilevante per l'esito elettorale.
+Inoltre in questa trattazione sono stati trascurati i voti della Valle d'Aosta che, secondo quanto previsto dal *Rosatellum*, non è entrata a far parte del computo per i seggi proporzionali e ha eletto un solo deputato e un solo senatore con un sistema puramente maggioritario.
+
+Per quanto riguarda la Camera, il territorio italiano è stato diviso in:
+
+* `r nrow(circ_shp_data)` circoscrizioni (inclusa la Valle d'Aosta);
+* `r nrow(pluri_shp_data)-1` collegi plurinominali (esclusa la Valle d'Aosta);
+* `r nrow(uni_shp_data)` collegi uninominali (inclusa la Valle d'Aosta).
+
+```{r p_circ_pluri_uni, echo=F, cache=T, warning=F, fig.align='center'}
+p_circ_pluri_uni <- ggplot() +
+  geom_polygon(data=uni.points, aes(x=long, y=lat, group=group, text=collegio),
+               fill="beige", color="grey", size=.1) +
+  geom_path(data=pluri.points, aes(x=long, y=lat, group=group),
+               color="gray32", size=.3) +
+  geom_path(data=circ.points, aes(x=long, y=lat, group=group),
+            color="black", size=.5) +
+  geom_path(data=reg2.points, aes(x=long, y=lat, group=group),
+            color="black", size=1) +
+  coord_fixed() +
+  theme_void() +
+  theme(plot.background = element_rect(fill = "bisque"),
+        legend.position="none") +
+  labs(title="Partizione del territorio italiano in",
+       subtitle="regioni, circoscrizioni, collegi plurinominali\ne collegi uninominali")
+p_circ_pluri_uni
+```
+
+Il *Rosatellum* prevede la possibilità per le liste di costituire delle coalizioni per l'elezione della componente maggioritaria.
+
+Di seguito sono elencate le principali liste raggruppate per relative coalizioni:
+
+
+| Coalizione                    | Lista                                       |
+|:-----------------------------:|:--------------------------------------------|
+| Coalizione di centrodestra   | Forza Italia                                |
+|                               | Lega                                        |
+|                               | Fratelli d'Italia                           |
+|                               | Noi con l'Italia - UDC                      |
+| Movimento 5 Stelle            | Movimento 5 Stelle                          |
+| Coalizione di centrosinistra | Partito democratico                         |
+|                               | +Europa                                     |
+|                               | Civica popolare                             |
+|                               | Italia Europa insieme                       |
+|                               | SVP - PATT  (solo in Trentino - Alto Adige) |
+| Liberi e Uguali               | Liberi e Uguali                             |
+
+
+## Risultato a livello nazionale
+
+```{r risultati, results='asis', echo=F, cache=T}
+liste_interessanti <- c("LEGA", "FI", "FDI", "UDC", "CDX",
+                        "M5S","PD","+E", "IEI", "CP", "SVP", "CSX",
+                        "LEU", "Altri")
+
+voti_altri <- circ_minist %>%
+  group_by(lista) %>%
+  summarize(voti=sum(voti)) %>% 
+  mutate(perc=voti/sum(voti)) %>% 
+  filter(!(lista%in%liste_interessanti)) %>% 
+  summarize(lista="Altri", voti=sum(voti))
+
+
+voti1 <- circ_minist %>%
+  group_by(lista) %>%
+  filter(lista%in%liste_interessanti) %>%
+  summarize(voti=sum(voti)) %>% 
+  rbind(voti_altri) %>% 
+  mutate(perc=voti/sum(voti)) %>% 
+  mutate(coalizione=NA, voti_coalizione=NA, perc_coalizione=NA) %>% 
+  rename(voti_lista=voti, perc_lista=perc) %>% 
+  select(lista, coalizione, voti_lista, perc_lista,
+         voti_coalizione, perc_coalizione)
+voti2 <- circ_minist_co %>%
+  group_by(coalizione) %>%
+  summarize(voti=sum(voti)) %>% 
+  mutate(perc=voti/sum(voti)) %>% 
+  arrange(-perc) %>% 
+  filter(coalizione%in%c("CDX", "CSX", "M5S", "LEU")) %>% 
+  mutate(lista=NA, voti_lista=NA, perc_lista=NA) %>% 
+  rename(voti_coalizione=voti, perc_coalizione=perc) %>% 
+  select(lista, coalizione, voti_lista, perc_lista,
+         voti_coalizione, perc_coalizione)
+
+voti <- rbind(voti1, voti2) %>% 
+  mutate(lista_co=factor(ifelse(!is.na(lista),lista,coalizione),
+                         levels=liste_interessanti)) %>% 
+  arrange(lista_co) %>% 
+  select(-lista_co)  %>%
+  mutate(perc_lista=ifelse(!is.na(perc_lista),
+                           paste(sprintf("%.1f",perc_lista*100),"%"),
+                           NA),
+         perc_coalizione=ifelse(!is.na(perc_coalizione),
+                                paste(sprintf("%.1f",perc_coalizione*100),"%"),
+                                NA))
+  
+
+knitr::kable(voti,
+             caption="Risultati nella Camera dei Deputati a livello nazionale (esclusa Valle d'Aosta)",
+             align=c("l","l",rep("r",4)))
+```
+
+
+
+## Quesiti affrontati nell'analisi
+
+Nella presente analisi si è cercato di rispondere alle seguenti domande:
+
+1. Come si distribuiscono i voti dei diversi partiti?
+2. C’è una netta divisione tra il voto nelle regioni del Nord e nelle regioni del Sud?
+3. Ci sono altre caratteristiche geografiche che impattano sul voto?
+4. Quali sono le caratteristiche socio-economiche dell'elettorato dei diversi partiti?
+5. Le zone geografiche sono solo un proxy per le caratteristiche socio-economiche degli elettori o da sole spiegano il voto degli elettori?
+
+Per quanto riguarda i quesiti 2 e 3, diversi commentatori politici hanno fatto notare come vi sia stata una netta spaccatura tra i voti nelle regioni del Nord che hanno visto la Lega come protagonista e nelle regioni del Sud, dominate dal Movimento 5 Stelle, mentre Partito Democratico è riuscito ad emergere solo nelle storiche regioni rosse. Inoltre si è anche fatto notare come nelle città del Nord (in particolare Milano e Torino) vi siano rilevanti differenze tra i centri città, dove ha vinto il Partito Democratico, le periferie, dove ha vinto il Movimento 5 Stelle e le provincie, dove ha vinto la Lega. Particolarmente interessante su questo tema è l'[analisi di Filippo Mastroianni su Il Sole 24 Ore](http://www.infodata.ilsole24ore.com/2018/05/29/le-quattro-fotografie-dellitalia-uscita-dal-voto-cosa-imparato/?refresh_ce=1).
+
+Per quanto riguarda i punti 4 e 5 si è notato come tra le diverse zone d'Italia vi sono anche forti differenze socio-economiche che possono spiegare le differenze nel voto. In merito a questo aspetto Giuseppe Sollazzo, data scientist e attivista open data londinese, ha affermato [nella sua analisi](https://medium.com/@puntofisso/le-vere-mappe-delle-elezione-italiane-a0cb89d27d9e) che "prima di tutto, la geografia è molto probabilmente, nel caso Italiano, un proxy per altri parametri (occupazione, PIL locale, benessere generale); e secondo, anche considerando la possibilità che sia un proxy, non è così forte come proxy".
+
+La tesi che vi siano nette distinzioni socio-economiche tra gli elettori dei diversi partiti è confermata anche dall'[indagine statistica effettuata da Tecnè per Tgcom24](http://www.t-mag.it/2018/03/05/elezioni-2018-cosi-la-sociologia-del-voto/). Da questa analisi si evince per esempio che:
+
+* per quanto riguarda l'età, gli elettori giovani hanno una maggiore tendenza rispetto agli anziani a votare per il Movimento 5 stelle, mentre gli anziani hanno una maggiore tendenza rispetto ai giovani a votare per il Partito Democratico e Forza Italia;
+* per quanto riguarda il livello di istruzione, gli elettori con un basso titolo di studio hanno una maggiore tendenza a votare per la Lega e Forza Italia rispetto agli elettori con un più alto titolo di studio.
+
+
+<center>
+<img src="Immagini\tecne_eta.png" alt="drawing" width="700px"/>
+<img src="Immagini\tecne_istruzione.png" alt="drawing" width="700px"/>
+</center>
+
+
+### Perché questi quesiti sono interessanti
+
+Questi quesiti sono interessanti innanzitutto perché permettono di indagare su un fenomeno sociale su base nazionale e permettono di capire quali sono i temi e gli ideali politici che più stanno vicini agli italiani. Questo può essere utile per le amministrazioni locali e nazionali per andare in contro in modo più mirato alle esigenze dei cittadini.
+
+In secondo luogo un'analisi di questo tipo può permettere ai partiti politici di capire meglio quali sono stati i punti di forza e i punti deboli della loro comunicazione.
+
+Solitamente per rispondere a domande di questo tipo si effettuano indagini statistiche come quella di Tecnè sopracitata. Queste rispetto all'analisi del voto hanno il vantaggio di raccogliere informazioni a livello di singolo individuo e non solo a livello di aggregati come i comuni o i collegi uninominali, quindi riescono a essere più precise.
+Di contro, le indagini politiche presentano diversi problemi e criticità:
+
+1. Il **costo**: indagini dettagliate richiedono campioni molto grandi e spesso è particolarmente difficile e costoso contattare particolari fasce della popolazione. Per esempio nell'indagine di Tecnè sopracitata sono stati contattati 89.912 individui con metodi di rilevazione telefonici (CATI), via web (CAWI) e di persona (CAPI).
+2. Il rischio di **non rappresentatività del campione**: nelle indagini statistiche spesso i campioni non sono rappresentativi poiché alcune fasce della popolazione sono più facili da contattare e rispondono più facilmente, mentre altre lo sono molto meno.
+3. Le **non risposte** e gli **indecisi**: un gran numero di contattati nelle indagini statistiche si rifiuta di rispondere alle domande o si dichiara indeciso. Per esempio nell'indagine di Tecnè sopracitata i rispondenti sono solo 30.023 (il 36.3% dei contattati).
+4. Le **correzioni non adeguate**: per far fronte ai problemi descritti nei punti 2 e 3 le aziende non pubblicano i dati come vengono rilevati, ma applicano delle correzioni per neutralizzare il problema della distorsione del campione.
+
+Proprio a causa di queste criticità i dati rilevati dalle indagini politiche a volte si rivelano molto lontani dal dato reale. È il caso per esempio dei sondaggi preelettorali. 
+
+Nella tabella e nel grafico seguente è riportato il confronto tra il dato previsto come [media degli ultimi sondaggi](https://www.agi.it/blog-italia/youtrend/sondaggi_elezioni_ultime_previsioni_4_marzo-3502407/post/2018-02-16/) pubblicati il 16 febbraio 2018 prima del silenzio elettorale e il dato realmente registrato alle elezioni. Nella pagina di Wikipedia dedicata ai [sondaggi sulle elezioni politiche italiane del 2018](https://it.wikipedia.org/wiki/Sondaggi_sulle_elezioni_politiche_italiane_del_2018) sono disponibili i dati di tutti i sondaggi.
+
+
+```{r results='asis', echo=F, cache=T}
+previsione=c(28.0, 22.8, 13.4, 16.4, 4.6, 5.7)
+
+sondaggi <- voti1 %>% 
+  select(lista, perc_lista) %>% 
+  filter(lista%in%c("M5S", "PD", "FI", "LEGA" , "FDI", "LEU")) %>% 
+  arrange(-perc_lista) %>% 
+  mutate(reale=100*perc_lista, previsione) %>% 
+  select(-perc_lista) %>% 
+  mutate(lista=factor(lista, levels=lista))
+
+sondaggi2 <- sondaggi %>%
+  mutate(reale=paste(sprintf("%.1f",reale),"%"),
+         previsione=paste(sprintf("%.1f",previsione),"%")) %>% 
+  select(lista, previsione, reale)
+
+knitr::kable(sondaggi2,
+             caption="Percentuali reali e percentuali stimate",
+             align=c("l","r","r"))
+```
+
+```{r echo=F, cache=T, warning=F, fig.align='center'}
+sondaggi %>% 
+  gather(reale, previsione, key="Dato", value="Percentuale") %>% 
+  ggplot(aes(x=lista, y=Percentuale, fill=Dato)) +
+  geom_col(position="dodge")
+```
+
+Oltre alla consueto fenomeno di sovrastima del centrosinistra e sottostima del centrodestra e al più recente fenomeno di sottostima del Movimento 5 Stelle già osservato alle elezioni politiche del 2013, è curioso che, per la prima volta dalla sua discesa in campo, i voti di Silvio Berlusconi sono stati sovrastimati nei sondaggi preelettorali.
+Questo può essere spiegato dal fatto che da buona parta dell'elettorato [Berlusconi sia visto come parte dell'establishment](https://www.huffingtonpost.it/2018/03/04/elezioni-2018-il-crollo-dellestablishment_a_23376827/?utm_hp_ref=it-homepage) allo stesso modo del Partito Democratico e dalla crescita di popolarità di Matteo Salvini che [ha fatto confluire un'importante fetta dei voti di centrodestra nella Lega](http://www.cattaneo.org/wp-content/uploads/2018/03/Analisi-Istituto-Cattaneo-Elezioni-Politiche-2018-Flussi-elettorali-5-marzo-2018.pdf).
+
+Va precisato che, nonostante le criticità delle indagini politiche, un'analisi dei risultati di voto non può sostituirle proprio perché, nonostante non soffra di distorsione, è limitata all'osservazione di aggregati e non di singoli individui, oltre all'evidente problema che le elezioni politiche avvengono ogni 5 anni, mentre le indagini politiche vengono effettuate costantemente.
+
+Le analisi del voto possono però essere utilizzate come uno strumento aggiuntivo che permetta di migliorare le indagini fornendo una base per ottenere nuovi fattori di stratificazione della popolazione per le future indagini.
+
+
+## Dati e metodi
+
+Nella presente trattazione sono stati analizzati per l'elezione della Camera dei Deputati i dati relativi a:
+
+* Affluenza;
+* Voti ai diversi partiti;
+* Caratteristiche socio-economiche delle diverse zone geografiche.
+
+### Fonti
+I dati dell'affluenza e i risultati dei partiti disaggregati per circoscrizioni, collegi plurinominali e collegi uninominali sono pubblici sul sito del [Dipartimento per gli Affari Interni e Territoriali del Governo Italiano](http://elezionistorico.interno.gov.it/).
+
+Gli shapefile utilizzati per disegnare le mappe e i dataset con i dati socioeconomici della popolazione italiana sono pubblici sul sito dell'ISTAT:
+
+* [in questa pagina](https://www.istat.it/it/archivio/210584) ci sono i confini amministrativi di regioni, province e comuni aggiornati all'1 gennaio 2018;
+* [in questa pagina](https://www.istat.it/it/archivio/208278) ci sono i confini di circoscrizioni, collegi plurinominali e collegi uninominali e gli indicatori socio-economici dei collegi elettorali delle elezioni del 4 marzo 2018.
+
+I dati in questione però presentano alcuni problemi:
+
+1. I dati del Ministero dell'Interno sono organizzati in file csv divisi per entità amministrative. Per analizzarli bisognerebbe scaricare due file (uno per l'affluenza e uno per i risultati) per ciascuna delle `r nrow(circ_shp_data)` circoscrizioni, due  per ciascuno dei `r nrow(pluri_shp_data)-1` collegi plurinominali, due per ciascuno dei `r nrow(uni_shp_data)` collegi uninominali;
+2. I dati sono stati pubblicati appena a maggio a causa di problemi con alcuni collegi;
+3. Le entità amministrative sul sito del Ministero sono identificate con determinati codici univoci che non corrispondono ai codici utilizzati dall'ISTAT;
+4. Le mappe con i comuni dell'ISTAT non sono aggiornate con i comuni che sono stati istituiti tra il 2 gennaio e il 4 marzo 2018; per esempio nella mappa del Friuli - Venezia Giulia mancano i comuni di "Fiumicello - Villa Vicentina" e "Treppo Ligosullo" che sono stati istituiti l'1 febbraio 2018.
+
+Per far fronte ai problemi 1, 2 e 3, si è attivato Andrea Borruso, presidente di [OnData](http://ondata.it/), *"Associazione per la promozione della trasparenza e della cultura dei dati attraverso le competenze digitali e il giornalismo investigativo"*, il quale ha scaricato i dati dalla piattaforma interattiva del sito del Ministero dell'Interno con uno script in bash e li ha pubblicati in [questa directory di GitHub](https://github.com/ondata/elezionipolitiche2018) prima ancora che venissero pubblicati i file csv ufficiali. Si è anche preso la briga di preparare una tabella che mette in relazione i codici identificativi dei comuni, delle province e delle regioni utilizzati dal Ministero dell'Interno con i codici identificativi utilizzati dall'ISTAT. Questa tabella può essere utilizzata come Stele di Rosetta per fare il join tra i dataset delle due fonti.
+
+Questi dati però presentano alcuni problemi:
+
+1. in alcune tabelle estratte dal sito del Ministero dell'Interno non è presente alcun codice identificativo, quindi prima di incrociarle con quelle del sito dell'ISTAT bisogna effettuare un matching con la Stele di Rosetta utilizzando il nome dell'ente, con i dovuti accorgimenti;
+2. la Stele di Rosetta presenta solo i codici di comuni, province e regioni, ma non i codici dei collegi e delle circoscrizioni, per i quali è necessario fare un matching via nome direttamente con i dati dell'ISTAT, con i dovuti accorgimenti;
+3. essendo stati scaricati subito dopo la pubblicazione da parte del Ministero dell'Interno, sono presenti alcuni dati mancanti, come quello dell'affluenza nella provincia di Prato, che a causa di alcuni [problemi nelle sezioni](http://iltirreno.gelocal.it/prato/cronaca/2018/03/04/news/sale-l-affluenza-al-voto-a-prato-4-punti-in-piu-rispetto-al-2013-1.16552409) sono stati pubblicati sul sito del Ministero solo in un secondo momento.
+
+Per il problema 3 ho deciso di utilizzare per l'analisi del voto a livello di circoscrizione i dati scaricati a mano in formato csv dal sito del Ministero dell'Interno.
+
+
+### Strumenti utilizzati per l'analisi
+
+Una buona parte del lavoro di analisi dei dati è stato svolto tramite la rappresentazione di mappe e diagrammi di dispersione.
+Gli strumenti statistici utilizzati per l'analisi tecnica sono stati:
+
+* la cluster analysis gerarchica per l'individuazione di cluster geografici con caratteristiche di voto simili;
+* la regressione lineare multivariata per l'individuazione delle caratteristiche socio-economiche dell'elettorato dei diversi partiti.
+
+
+# Analisi dei dati
+
+
+## Affluenza
+
+### Affluenza a livello aggregato
+
+
+L'affluenza su base nazionale si è attestata al 72.94%, in calo rispetto al 75.20% delle elezioni politiche del 2013, risultando la più bassa della storia repubblicana (dal 1948). Nel confronto con le ultime elezioni va però tenuto presente che nel 2013 si è votato anche il lunedì, mentre nel 2018 i seggi sono stati aperti solo la domenica.
+
+<center>
+![](Immagini\affluenza_cattaneo.jpg)
+</center>
+
+```{r disegnoMappeAffluenza, include=F, cache=T}
+source("script2.2_affluenza_20180628.R")
+```
+
+Guardando i boxplot seguenti si può notare come vi sia stata un'affluenza alle ore 23:00 complessivamente più bassa rispetto a quella delle precedenti elezioni. Si può notare anche una leggera diminuzione della variabilità, sia in termini di deviazione standard, sia in termini di coefficiente di variazione.
+
+Si ricorda che il coefficiente di variazione di una variabile $X$ è definito come:
+
+$$
+CV(X)=\frac{SD(X)}{E(X)}
+$$
+
+dove $SD(X)$ è la deviazione standard di $X$ e $E(X)$ è la media di $X$.
+
+
+```{r , results='asis', warnings=F, echo=F, cache=T}
+knitr::kable(d_aff2 %>% 
+  group_by(hour) %>% 
+  summarize(min=min(perc, na.rm=T),
+            mean=mean(perc, na.rm=T),
+            median=median(perc, na.rm=T),
+            max=max(perc, na.rm=T),
+            sd=sd(perc, na.rm=T),
+            cv=sd/mean) %>% 
+    mutate(min=paste(sprintf("%.1f",min),"%"),
+           mean=paste(sprintf("%.1f",mean),"%"),
+           median=paste(sprintf("%.1f",median),"%"),
+           max=paste(sprintf("%.1f",max),"%"),
+           sd=paste(sprintf("%.2f",sd),"%"),
+           cv=sprintf("%.3f",cv)),
+             caption="Distribuzione dell'affluenza nelle provincie",
+             align=c("l","r","r","r","r"))
+
+knitr::kable(d_aff1 %>% 
+  group_by(hour) %>% 
+  summarize(min=min(perc, na.rm=T),
+            mean=mean(perc, na.rm=T),
+            median=median(perc, na.rm=T),
+            max=max(perc, na.rm=T),
+            sd=sd(perc, na.rm=T),
+            cv=sd/mean) %>% 
+    mutate(min=paste(sprintf("%.1f",min),"%"),
+           mean=paste(sprintf("%.1f",mean),"%"),
+           median=paste(sprintf("%.1f",median),"%"),
+           max=paste(sprintf("%.1f",max),"%"),
+           sd=paste(sprintf("%.2f",sd),"%"),
+           cv=sprintf("%.3f",cv)),
+             caption="Distribuzione dell'affluenza nei comuni",
+             align=c("l","r","r","r","r"))
+```
+
+```{r, echo=F, cache=T, warning=F, fig.align='center'}
+grid.arrange(p_aff_boxplot2, p_aff_boxplot1, nrow=1)
+```
+
+### Affluenza a livello locale
+
+Le mappe seguenti mostrano l'affluenza nelle diverse zone d'Italia. Dalla mappa con il dettaglio a livello provinciale appare evidente che l'affluenza nelle regioni del Nord sia stata significativamente più alta rispetto all'affluenza nelle regioni del Sud, con picchi positivi nelle provincie di Veneto, Lombardia, Toscana ed Emilia - Romagna e picchi negativi nelle provincie di Sicilia, Calabria e Sardegna. Emerge inoltre che c'è stato un picco di bassa affluenza nella provincia di Bolzano, in Trentino - Alto Adige
+
+La seconda mappa mostra gli stessi dati con un dettaglio a livello comunale. A causa della maggiore variabilità dei dati dovuta comuni (solitamente molto piccoli) che raggiungono livelli superiori al 90% e altri inferiori al 20% risultano meno evidenti le differenze su scala nazionale poiché la maggior parte dei comuni rimane sulla fascia verde. Nella terza mappa è stato ovviato a questo problema schiacciando tutti i comuni con affluenza superiore all'80% sul giallo e tutti i comuni con affluenza inferiore al 60% sul blu. Va notato che la scelta delle soglie introduce un ampio margine di arbitrarietà nel disegnare la mappa. Invece l'accorpamento dei comuni in zone omogenee più estese (come possono essere le provincie o i collegi uninominali) fornisce un effetto smoothing che neutralizza il problema dei picchi nei piccoli comuni.
+
+```{r affMappa, echo=F, cache=T, align='center', fig.width = 10}
+grid.arrange(p_aff_prov,
+             p_aff_cm_1,
+             p_aff_cm_2,
+             nrow=1)
+```
+
+I diagrammi a dispersione seguenti rappresentano sull'asse delle ascisse l'affluenza alle elezioni del 2013 e sull'asse delle ordinate l'affluenza alle elezioni del 2018. I colori rappresentano le regioni: punti dello stesso colore rappresentano province o comuni appartenenti alla stessa regione.
+Da questi grafici emerge che la diminuzione dell'affluenza si è riscontrata soprattutto nelle regioni del Nord (dove l'affluenza è alta), mentre è stata meno accentuata in alcune regioni del Sud (dove l'affluenza è bassa), in particolare in Campania, dove si è registrato un aumento che può essere spiegato dall'aumento dei consensi nei confronti del Movimento 5 Stelle grazie alla popolarità del leader napoletano Luigi Di Maio.
+
+Guardando la parte destra del diagramma a dispersione emerge un punto anomalo corrispondente alla provincia di Bolzano, che ha conosciuto un enorme crollo di affluenza passando dall'82% al 69%.
+Per spiegare questo fenomeno bisogna indagare sulla situazione sociale e politica dell'Alto Adige.
+I residenti della [provincia autonoma di Bolzano](https://it.wikipedia.org/wiki/Provincia_autonoma_di_Bolzano) sono per il 62.2% germanofoni e la minoranza italofona costituisce solo il 23.3% della popolazione. Il partito che domina la scena politica altoatesina è il Südtiroler Volkspartei (SVP), partito autonomista moderato, che ha governato ininterrottamente la provincia fin dalla sua istituzione nel 1948 e attualmente governa la maggior parte dei comuni della provincia di Bolzano. Il SVP durante la prima repubblica si è presentato alle elezioni politiche al fianco della Democrazia Cristiana, mentre dagli anni '90 si è schierato con i partiti di centrosinistra, motivo per cui alle elezioni del 4 marzo 2018 ha fatto parte della coalizione del Partito Democratico. A causa di una diminuzione di fiducia nei confronti del Partito Democratico, che ha colpito tutta l'Italia durante il governo Renzi, e della scelta di candidare al collegio uninominale di Bolzano Maria Elena Boschi, si è diffuso un [generale malcontento da parte dell'elettorato sudtirolese](https://www.internazionale.it/opinione/gerhard-mumelter/2018/02/13/bolzano-boschi-biancofiore). Questo malcontento è stato incanalato dai parti della destra indipendentista sudtirolese, come Die Freiheitlichen (i Libertari), i quali, non riconoscendo una valida alternativa nei candidati della coalizione di centrodestra -che ha presentato al collegio uninominale di Bolzano Michaela Biancofiore-, [hanno invitato gli elettori all'astensionismo](https://www.salto.bz/de/article/23022018/blau-fuer-weiss).
+
+
+```{r affPlotly, echo=F, cache=T, warning=F, fig.align='center'}
+ggplotly(p_aff_disp2, tooltip="text")
+ggplotly(p_aff_disp1, tooltip="text")
+```
+
+
+### Tabelle interattive affluenza
+
+Nelle seguenti tabelle è possibile riordinare i dati per affluenza crescente o decrescente e tramite la barra di ricerca selezionare una regione, una provincia o un comune di interesse.
+
+```{r affTab1, echo=F}
+DT::datatable(
+ votantiCIprovince %>%
+ select(PROVINCIA=ente, REGIONE, perc_ore12, perc_ore19, perc_ore23, percprec_ore23) %>%
+ arrange(-perc_ore23),
+caption = "Affluenza nelle provincie."
+)
+```
+
+```{r affTab2, echo=F}
+DT::datatable(
+ votantiCIComuni %>%
+ select(COMUNE=ente, PROVINCIA=prov, REGIONE,
+        perc_ore12, perc_ore19, perc_ore23, percprec_ore23) %>%
+ arrange(-perc_ore23),
+caption = "Affluenza nei comuni."
+)
+```
+
+
+
+## Analisi del voto
+
+Nei boxplot seguenti è riportata la distribuzione della popolazione alla data del censimento del 2011 nei diversi collegi. Dai boxplot si può notare che la distribuzione della popolazione nelle circoscrizioni ha un'altissima variabilità. Per rendere il più possibile equilibrato il potere degli elettori residenti nelle diverse zone d'Italia, i collegi sono stati divisi in collegi uninominali il più omogenei possibili in termini di popolazione, che a loro volta sono stati accorpati in collegi plurinominali mantenendo una certa omogeneità. Ogni collegio uninominale ha una popolazione di circa 256000 abitanti.
+
+Questo fa sì che nelle aree con una bassa densità di popolazione (come il Friuli - Venezia Giulia, che conta circa 1.2 milioni di abitanti) i collegi uninominali corrispondo all'accorpamento di diversi comuni, mentre nelle aree con alta densità di popolazione (come Milano, che da sola conta circa 1.4 milioni di abitanti e considerando tutta la città metropolitana ne conta più di 3.2 milioni), i comuni stessi sono stati divisi in più collegi subcomunali.
+
+La forte omogeneità dei collegi uninominali in termini di popolazione li rende ottimali per l'analisi dei risultati, poiché si evitano i problemi visti in merito all'affluenza a livello comunale. Di contro bisogna prestare attenzione a non farsi ingannare dalle mappe che vedono i colori dei partiti che hanno vinto nei collegi provinciali occupare un'area della figura molto più grande rispetto ai colori dei partiti che hanno vinto nei collegi subcomunali delle grandi città. Uno stratagemma per ovviare a questo problema è quello di [distorcere le figure in modo da rendere le superfici degli enti proporzionali alla popolosità](https://twitter.com/CortesiNicola/status/976403063694032896). Ho deciso di evitare questo approccio perché rende poco riconoscibili le figure.
+
+```{r , echo=F, cache=T, fig.width=5, fig.height=5, fig.align='center'}
+rbind(mutate(select(circ_shp_data, POP_2011), tipo="Circoscrizioni"),
+      mutate(select(pluri_shp_data, POP_2011), tipo="Collegi plurinominali"),
+      mutate(select(uni_shp_data, POP_2011), tipo="Collegi uninominali")) %>% 
+  ggplot(aes(x=tipo, y=POP_2011)) +
+  geom_boxplot() +
+  theme(plot.background = element_rect(fill = "bisque"),
+        legend.position="none") +
+  labs(title="Distribuzioni della popolazione (2011)",
+       subtitle="nei collegi")
+```
+
+
+### Vincitori
+
+Nelle seguenti mappe sono riportate le liste e le coalizioni vincitrici a livello di circoscrizioni, di collegi plurinominali e di collegi uninominali. Sono state riportate anche le mappe con il dettaglio della Lombardia, del Piemonte e del Lazio per mettere in evidenza i collegi subcomunali. Da queste mappe risulta evidente che ci sia una netta differenza tra Nord, dove prevalgono i voti della Lega, e Sud, dove prevalgono i voti del Movimento 5 Stelle. Guardando con attenzione la mappa dei collegi uninominali si nota anche una netta differenza tra i voti nei collegi subcomunali dei capoluoghi e i voti nelle province. In particolare nelle città del Nord si nota che in pieno centro ha vinto il Partito Democratico, nelle periferie il Movimento 5 Stelle e in provincia la Lega.
+
+```{r mappeVoti, include=F, cache=T}
+source("script2.3_mappeVoti_20180629.R")
+```
+
+```{r mappeVotiReg, include=F, cache=T}
+source("script2.4_mappeVotiRegioni.R")
+```
+
+```{r mappeVotiReg2, include=F, cache=T}
+source("script2.5_mappeConcentrazioneRegione.R")
+```
+
+
+```{r vincitoriMappa, echo=F, cache=T, fig.width = 10, fig.align='center'}
+grid.arrange(p_circ_vinc, p_circ_vinc_co, nrow=1)
+grid.arrange(p_pluri_vinc, p_pluri_vinc_co, nrow=1)
+grid.arrange(p_uni_vinc, p_uni_vinc_co, nrow=1)
+```
+
+
+```{r vincitoriMappaReg, echo=F, cache=T, fig.width = 10, fig.align='center'}
+grid.arrange(p_uni_lomb_vinc, p_uni_lomb_vinc_co, nrow=1)
+grid.arrange(p_uni_piem_vinc, p_uni_piem_vinc_co, nrow=1)
+grid.arrange(p_uni_lazio_vinc, p_uni_lazio_vinc_co, nrow=1)
+```
+
+### Tabelle interattive voti
+
+```{r , echo=F}
+DT::datatable(
+ data_circ %>%
+ select(CIRCOSCRIZIONE=circoscrizione, LEGA, FI, FDI, M5S, PD, `+E`, SVP, LEU,
+        vincitore, vincitore_co) %>%
+ arrange(-M5S) %>% 
+ mutate(LEGA=round(LEGA,2),
+        FI=round(FI,2),
+        FDI=round(FDI,2),
+        M5S=round(M5S,2),
+        PD=round(PD,2),
+        `+E`=round(`+E`,2),
+        SVP=round(SVP,2),
+        LEU=round(LEU,2)),
+caption = "Distribuzione dei voti nelle circoscrizioni.")
+```
+
+```{r , echo=F}
+DT::datatable(
+ data_pluri %>%
+ select(collegio, LEGA, FI, FDI, M5S, PD, `+E`, SVP, LEU,
+        vincitore, vincitore_co) %>%
+ arrange(-M5S) %>% 
+ mutate(LEGA=round(LEGA,2),
+        FI=round(FI,2),
+        FDI=round(FDI,2),
+        M5S=round(M5S,2),
+        PD=round(PD,2),
+        `+E`=round(`+E`,2),
+        SVP=round(SVP,2),
+        LEU=round(LEU,2)),
+caption = "Distribuzione dei voti nei collegi plurinominali.")
+```
+
+```{r , echo=F}
+DT::datatable(
+ data_uni %>%
+ select(collegio, LEGA, FI, FDI, M5S, PD, `+E`, SVP, LEU,
+        vincitore, vincitore_co) %>%
+ arrange(-M5S) %>% 
+ mutate(LEGA=round(LEGA,2),
+        FI=round(FI,2),
+        FDI=round(FDI,2),
+        M5S=round(M5S,2),
+        PD=round(PD,2),
+        `+E`=round(`+E`,2),
+        SVP=round(SVP,2),
+        LEU=round(LEU,2)),
+caption = "Distribuzione dei voti nei collegi uninominali.")
+```
+
+### Concentrazione voti
+
+Le mappe con i risultati elettorali mostrate fino adesso hanno un grosso difetto: mostrano il vincitore, ma non di quanto ha vinto. Per avere una visione più completa del comportamento degli elettori è utile analizzare le seguenti mappe. In queste mappe è visualizzata a livello di collegio uninominale l'intensità di voto di ognuno dei 4 principali partiti tramite l'intensità dei colori.
+
+Nel commentare queste mappe bisogna però prestare attenzione alla scala riportata a fianco. Per esempio confrontando la mappa del Movimento 5 Stelle e della Lega appare evidente che la Lega ha preso più voti al Nord, mentre il Movimento 5 Stelle ha preso più voti al Sud, ma si può anche notare che, mentre la Lega al Sud in certi collegi raggiunge percentuali attorno al 2% o 3%, il Movimento 5 Stelle nei collegi del Nord colorati con un bianco sporco ottiene comunque percentuali che si aggirano attorno al 20%, confermandosi un partito molto più trasversale della Lega.
+
+Confrontando le mappe della Lega e di Forza Italia si può notare come, mentre la Lega, che si è rivelata il partito trainante del centrodestra, ha ottenuto voti principalmente al Nord, a Forza Italia sono rimasti quasi unicamente i collegi del Sud Italia, dove la Lega non è riuscita a emergere. Questo conferma [il dato rilevato dall'Istituto Cattaneo](http://www.cattaneo.org/wp-content/uploads/2018/03/Analisi-Istituto-Cattaneo-Elezioni-Politiche-2018-Flussi-elettorali-5-marzo-2018.pdf), secondo cui buona parte degli elettori di centrodestra del Nord, che alle elezioni del 2013 hanno votato Popolo della Libertà (PDL), abbiano deciso di votare Lega.
+
+In tutte e 4 le mappe si nota una chiazza bianca in corrispondenza della provincia di Bolzano. Questo è dovuto al fatto che in Alto Adige il primo partito è stato SVP che nei collegi di Merano e Bressanone ha superato il 60%.
+
+```{r concentrazioniMappa, echo=F, cache=T, fig.height=8.5, fig.align='center'}
+grid.arrange(p_lega, p_fi, p_m5s, p_pd, nrow=2)
+```
+
+
+### Analisi a livello locale
+
+Guardando le mappe delle concentrazioni di voto della Lega e del Partito Democratico si notano in Nord Italia una serie di "buchi", corrispondenti da ovest a est alle città di Torino, Milano, Bergamo, Brescia, Verona, Padova e Venezia. Un dettaglio simile si nota anche a Roma. Dalle mappe con la concentrazione relativa di voto a livello regionale si nota che in tutte le regioni la Lega ha un significativo calo di consensi nelle città. In Lombardia questo calo si traduce in un vero e proprio crollo dal 40% del collegio di Sondrio al 15% dei collegi in centro a Milano, ma anche in Veneto, dove la Lega ha un consenso più uniforme e con la coalizione di centrodestra è riuscita a ottenere tutti i collegi uninominali, si nota un calo nei principali centri urbani.
+Viceversa il Partito Democratico, che negli ultimi anni ha conosciuto una diminuzione dei consensi nelle provincie, rimane molto forte nelle città arrivando a raggiungere quasi il 30% nei centri urbani.
+Il Movimento 5 Stelle invece riesce a intercettare i voti nelle periferie dove né la Lega né il Partito Democratico sono sufficientemente forti.
+
+Risulta interessante che anche nel Lazio, regione in cui la Lega non ha una forte base elettorale, quest'ultima riesca a ottenere un discreto successo nelle provincie, mentre rimane un partito marginale in centro a Roma. Invece Fratelli d'Italia, partito molto vicino alla Lega per quanto riguarda le posizioni politiche, mostra un andamento diametralmente opposto riuscendo ad attecchire soprattutto a Roma, dove risulta molto più forte che nella provincia.
+
+Nel Lazio il pattern del centrosinistra risulta ancora più evidente guardando la distribuzione dei voti di +Europa, partito appartenente alla coalizione di centrosinistra che non è riuscito a raggiungere la soglia di sbarramento del 3%, ma la cui leader Emma Bonino ha ottenuto il seggio al Senato tramite l'elezione in un collegio uninominale di Roma.
+
+Guardando le regioni del Sud invece si osserva una diversa distribuzione dei voti del Partito Democratico, dovuta a un Movimento 5 Stelle molto forte tanto in periferia quanto in città, che raggiunge picchi sopra al 60% nei collegi di Napoli. Anche in Campania la Lega, per quanto risulti essere un partito secondario, mostra maggiori consensi in provincia rispetto che in città.
+
+
+```{r concentrazioniMappaReg1, echo=F, cache=T, fig.height=6.4, fig.align='center'}
+grid.arrange(p_lomb_lega, p_lomb_fi, p_lomb_m5s, p_lomb_pd, nrow=2)
+```
+
+
+```{r concentrazioniMappaReg2, echo=F, cache=T, fig.height=8.5, fig.align='center'}
+grid.arrange(p_piem_lega, p_piem_fi, p_piem_m5s, p_piem_pd, nrow=2)
+```
+
+
+```{r concentrazioniMappaReg3, echo=F, cache=T, fig.height=7.2, fig.align='center'}
+grid.arrange(p_ven_lega, p_ven_fi, p_ven_m5s, p_ven_pd, nrow=2)
+```
+
+
+```{r concentrazioniMappaReg4, echo=F, cache=T, fig.height=10.3, fig.align='center'}
+grid.arrange(p_lazio_lega, p_lazio_fi, p_lazio_fdi, p_lazio_m5s, p_lazio_pd, p_lazio_e, nrow=3)
+```
+
+
+```{r concentrazioniMappaReg5, echo=F, cache=T, fig.height=6.2, fig.align='center'}
+grid.arrange(p_camp_lega, p_camp_fi, p_camp_m5s, p_camp_pd, nrow=2)
+```
+
+
+### Correlazioni tra i partiti
+
+Dalla matrice di correlazione nei voti dei partiti emerge che la Lega e il Movimento 5 Stelle hanno una correlazione negativa fortissima, dovuta al fatto che la Lega ottiene voti prevalentemente al Nord, mentre il Movimento 5 Stelle al Sud.
+Come già osservato Forza Italia, vedendosi sottratta l'egemonia sull'elettorato di centrodestra al Nord, ha ottenuto voti prevalentemente al Sud, motivo per cui i voti di Forza Italia risultano correlati positivamente con i voti del Movimento 5 Stelle.
+
+```{r pairsPrep, echo=F, cache=T}
+panel.cor <- function(x, y){
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- round(cor(x, y), digits=2)
+  #txt <- paste0("r = ", r)
+  txt=as.character(r)
+  #cex.cor <- 0.8/strwidth(txt)
+  cex.cor <- 4
+  text(0.5, 0.5, txt, cex = cex.cor * abs(r)+.7)
+}
+# Customize upper panel
+upper.panel<-function(x, y){
+  points(x,y, pch = 19, cex=1)
+}
+# Customize diagonal panel
+panel.hist <- function(x, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(usr[1:2], 0, 1.5) )
+  h <- hist(x, plot = FALSE)
+  breaks <- h$breaks; nB <- length(breaks)
+  y <- h$counts; y <- y/max(y)
+  rect(breaks[-nB], 0, breaks[-1], y, col = "grey", ...)
+}
+
+```
+
+
+```{r , echo=F, fig.align='center', cache=T}
+# Create the plots
+pairs(data_circ[,c(4,5,8,9)], 
+      lower.panel = panel.cor,
+      upper.panel = upper.panel,
+      diag.panel = panel.hist,
+      gap=0,
+      main = "Correlazioni tra le percentuali dei partiti nelle circoscrizioni")
+
+pairs(data_pluri[,c(4,5,8,9)], 
+      lower.panel = panel.cor,
+      upper.panel = upper.panel,
+      diag.panel=panel.hist,
+      gap=0,
+      main = "Correlazioni tra le percentuali dei partiti nei collegi plurinominali")
+
+pairs(data_uni[,c(3,4,7,8)], 
+      lower.panel = panel.cor,
+      upper.panel = upper.panel,
+      diag.panel=panel.hist,
+      gap=0,
+      main = "Correlazioni tra le percentuali dei partiti nei collegi uninominali")
+```
+
+
+### Cluster analysis
+
+Gli aspetti emersi osservando le mappe risultano ancora più evidenti effettuando una cluster analysis.
+
+Tutte le cluster analysis sono state effettuate utilizzando come spazio vettoriale i voti di tutti i partiti e calcolando la distanza tra i cluster con il metodo dell'average linkage. Da un'analisi delle componenti principali risulta che gran parte delle informazioni sono raccolte dalle prime 3 o 4 componenti, di conseguenza tutti i partiti minori assumono un ruolo quasi irrilevante per la costituzione dei cluster. Le variabili più informative per la costituzione dei cluster risultano essere i voti della Lega e i voti del Movimento 5 Stelle.
+
+Per la scelta del numero di cluster si è considerato il rapporto tra la distanza tra gli ultimi due cluster accorpati e la distanza tra i due cluster accorpati al passo precedente. Più è alto questo rapporto e più è rilevante la divisione tra i cluster appena accorpati.
+
+
+#### Cluster tra le circoscrizioni
+
+Da tutte le cluster analysis effettuate, si nota il non allineamento della provincia di Bolzano, dove la vittoria del SVP la identifica come un elemento anomalo non appartenente agli altri cluster.
+
+Considerando i rapporti tra le distanze sui cluster accorpati, risulta che la miglior partizione delle circoscrizioni consiste nella separazione tra:
+
+1. Trentino - Alto Adige;
+2. Circoscrizioni del Centro Nord, dove vi è una forte presenza della Lega e del Partito Democratico;
+3. Circoscrizioni del Sud, dove ha ampiamente vinto il Movimento 5 Stelle.
+
+La seconda miglior partizione vede il cluster del Centro-Nord diviso tra le Circoscrizioni dove ha ampiamente vinto la Lega e le circoscrizioni del Centro assieme a Piemonte 1 e Liguria, dove vi è un'importante presenza del Partito Democratico e una discreta presenza del Movimento 5 Stelle.
+
+```{r , echo=F, fig.align='center', fig.width=10, fig.height=6, cache=T}
+plot(ls_av_circ)
+rect.hclust(ls_av_circ,k=best_k_circ[2], border="green", which=c(3,4))
+rect.hclust(ls_av_circ,k=best_k_circ[1], border="red")
+```
+
+```{r clusterMappa1, echo=F, cache=T, fig.align='center', fig.height=8, cache=T}
+grid.arrange(p_circ_cluster1, p_circ_cluster2, nrow=1)
+```
+
+Nel seguente diagramma a dispersione ogni bolla rappresenta una circoscrizione, la sua dimensione corrisponde alla popolosità e il colore corrisponde al cluster di appartenenza. Sugli assi sono rappresentati le percentuali ottenute dal Movimento 5 Stelle e dalla Lega, che risultano essere le variabili che meglio spiegano la partizione in cluster.
+Guardando la dimensione delle bolle risulta evidente che ci siano circoscrizioni poco popolose, come il Molise e circoscrizioni molto popolose come Lombardia 1, dove è situata Milano. Si noti che guardando le mappe delle circoscrizioni il Molise risulta essere più grande della circoscrizione di Lombardia 1 nonostante sia molto meno popoloso.
+
+
+```{r , echo=F, fig.align='center', fig.width=9, fig.height=5, cache=T}
+# Circoscrizioni
+data_circ2 <- data_circ %>% 
+  left_join(select(circ_shp_data, COD_CIRC, POP_2011), by="COD_CIRC")
+
+p_bubble_circ_cluster <- data_circ2 %>%
+  ggplot(aes(x=`M5S`, y=`LEGA`, color=cluster2, size=POP_2011,
+             text=paste("<b>", circoscrizione, "</b>",
+                        "<br />M5S: ", round(`M5S`,1),
+                        "<br />LEGA: ", round(`LEGA`,1),
+                        "<br />PD: ", round(`PD`,1),
+                        "<br />FI: ", round(`FI`,1),
+                        "<br />Pop: ", POP_2011)))+
+  geom_point() +
+  geom_point(pch=1, color="black", alpha=.2) +
+  scale_color_manual(values=c(col_pd, col_lega, col_m5s, col_svp)) +
+  labs(title="Circoscrizioni divise in 4 cluster") +
+  theme(legend.position = "none")
+
+ggplotly(p_bubble_circ_cluster, tooltip=c("text"))
+```
+
+
+
+#### Cluster tra i collegi plurinominali
+
+Effettuando una cluster analysis tra i collegi plurinominali si osserva sempre una netta distinzione tra collegi del Nord e collegi del Sud, ma aumentando il dettaglio emergono in un cluster a sé stante i collegi di Lombardia 1 - 03, dove è situato Milano, e di Toscana - 03, dove è situata Firenze, città natale di Matteo Renzi.
+
+```{r , echo=F, fig.align='center', fig.width=10, fig.height=6, cache=T}
+plot(ls_av_pluri, hang = -1, cex=.5)
+rect.hclust(ls_av_pluri,k=best_k_pluri[3], border="blue", which=c(3,4,5))
+rect.hclust(ls_av_pluri,k=best_k_pluri[1], border="red")
+```
+
+```{r clusterMappa2, echo=F, cache=T, fig.align='center'}
+grid.arrange(p_pluri_cluster1, p_pluri_cluster2, nrow=1)
+```
+
+```{r , echo=F, fig.align='center', fig.width=9, fig.height=5, cache=T}
+# Plurinominale
+data_pluri2 <- data_pluri %>% 
+  left_join(select(pluri_shp_data, collegio, POP_2011), by="collegio")
+
+p_bubble_pluri_cluster <- data_pluri2 %>%
+  ggplot(aes(x=`M5S`, y=`LEGA`, color=cluster2, size=POP_2011,
+             text=paste("<b>", collegio, "</b>",
+                        "<br />M5S: ", round(`M5S`,1),
+                        "<br />LEGA: ", round(`LEGA`,1),
+                        "<br />PD: ", round(`PD`,1),
+                        "<br />FI: ", round(`FI`,1),
+                        "<br />Pop: ", POP_2011)))+
+  geom_point() +
+  geom_point(pch=1, color="black", alpha=.2) +
+  scale_color_manual(values=c(col_pd, col_lega, col_leu, col_m5s, col_svp)) +
+  labs(title="Collegi plurinominali divisi in 5 cluster") +
+  theme(legend.position = "none")
+
+ggplotly(p_bubble_pluri_cluster, tooltip=c("text"))
+```
+
+
+#### Cluster tra i collegi uninominali
+
+Aumentando ulteriormente il dettaglio si ottiene una partizione dei collegi uninominali in 7 cluster:
+
+1. Collegi di Merano e Bressanone, dove il SVP ha ottenuto la maggioranza assoluta;
+2. Collegio di Bolzano, dove SVP ha ottenuto la maggioranza relativa, ma non in modo netto come a Merano e Bressanone;
+3. Collegi del Nord Italia, in cui ha vinto la Lega;
+4. Collegi del Sud Italia, in cui ha vinto ampiamente il Movimento 5 Stelle;
+5. Collegi subcomunali nei principali capoluoghi del centro e del Nord, in cui ha vinto il Partito Democratico e la Lega ha ottenuto pochi consensi;
+6. Collegi dell'Italia Centrale assieme ad alcune città del Nord, come Venezia, Trieste e Gorizia, in cui vi è un generale equilibrio tra Movimento 5 Stelle, Partito Democratico e Lega;
+7. Collegi del Sud dove Forza Italia ha ottenuto dei risultati importanti.
+
+```{r , echo=F, fig.align='center', fig.width=10, fig.height=8, cache=T}
+plot(ls_av_uni, hang = -1, cex = 0.4)
+#rect.hclust(ls_av_uni,k=best_k_uni[1], border="red")
+rect.hclust(ls_av_uni,k=best_k_uni[2], border="green")
+rect.hclust(ls_av_uni,k=best_k_uni[3], border="blue", which=c(4,5))
+rect.hclust(ls_av_uni,k=best_k_uni[4], border="red")
+```
+
+```{r clusterMappa3, echo=F, cache=T, fig.height=18, fig.align='center'}
+grid.arrange(p_uni_cluster1, p_uni_cluster2, p_uni_cluster3, nrow=3)
+```
+
+Dal diagramma a dispersione coi collegi uninominali si nota che, salvo casi particolari come i collegi del Trentino - Alto Adige, che essendo una regione a statuto speciale possiede diversi privilegi, la popolosità dei collegi è abbastanza uniforme.
+Con questa rappresentazione è facile individuare i collegi subcomunali in rosso scuro, che data la loro scarsa estensione si confondono nella mappa.
+
+```{r , echo=F, fig.align='center', fig.width=9, fig.height=5, cache=T}
+# Uninominale
+data_uni2 <- data_uni %>% 
+  left_join(select(uni_shp_data, collegio, POP_2011), by="collegio")
+
+p_bubble_uni_cluster <- data_uni2 %>%
+  ggplot(aes(x=`M5S`, y=`LEGA`, color=cluster3, size=POP_2011,
+             text=paste("<b>", collegio, "</b>",
+                        "<br />M5S: ", round(`M5S`,1),
+                        "<br />LEGA: ", round(`LEGA`,1),
+                        "<br />PD: ", round(`PD`,1),
+                        "<br />FI: ", round(`FI`,1),
+                        "<br />Pop: ", POP_2011))) +
+  geom_point() +
+  geom_point(pch=1, color="black", alpha=.2) +
+  scale_color_manual(values=c(col_leu, col_pd, col_lega, col_m5s,
+                              col_fi, col_altro, col_svp)) +
+  labs(title="Collegi uninominali divisi in 7 cluster") +
+  theme(legend.position = "none")
+
+ggplotly(p_bubble_uni_cluster, tooltip=c("text"))
+```
+
+
+
+## Analisi delle caratteristiche socio-economiche degli elettori
+
+Sul sito dell'ISTAT, in occasione delle elezioni del 4 Marzo, è [stata pubblicata una serie di indicatori di carattere socio-economico a livello di collegi](https://www.istat.it/it/archivio/208278). Si tratta di dati sulla popolazione raccolti durante il censimento del 2011. L'ISTAT monitora con cadenza mensile dati di tipo socio-economico a livello aggregato, ma è stato scelto di pubblicare i dati risalenti al 2011 perché sono gli unici con un dettaglio adeguato e sufficientemente precisi da permettere di effettuare analisi dei risultati elettorali.
+Per gli indicatori di tipo demografico questo non è un grosso problema, ma può esserlo per dati di tipo socio-economico come il [tasso di disoccupazione](http://dati.istat.it/Index.aspx?DataSetCode=DCCV_TAXDISOCCUMENS1), che nel 2011 su base nazionale  si attestava tra l'8% e il 9%, mentre nel 2017 si attestava attorno all'11% dopo una lunga crescita avvenuta tra il 2008 e il 2014, quando si è toccata quota 13%, e una successiva decrescita.
+
+I dati messi a disposizione dall'ISTAT sono i seguenti:
+
+```{r, results='asis', echo=F, warning=F, message=F, cache=T}
+knitr::kable(select(read_csv("descr_datiISTAT.csv"),1:3))
+```
+
+
+### Analisi degli indicatori
+
+Dai boxplot seguenti si può notare che tutti gli indicatori hanno una distribuzione abbastanza simmetrica, tranne la densità abitativa. Per questo prima di effettuare la regressione le è stata applicata una trasformazione logaritmica.
+
+```{r , echo=F, warning=F, message=F, fig.align='center', fig.width=9, fig.height=5, cache=T}
+indicatori <- read_csv("CAMERA17U_INDICATORI.csv")
+
+indicatori <- indicatori %>% 
+  mutate(ID=as.character(ID),
+         CAM17U_DEN=str_to_upper(stri_trans_general(CAM17U_DEN,"Latin-ASCII")),
+         CAM17U_NOME=str_to_upper(stri_trans_general(CAM17U_NOME,"Latin-ASCII"))
+         )
+
+par <- par(mfrow=c(3,5), mar=c(1,2,2,1))
+for(i in 5:ncol(indicatori)){
+  boxplot(indicatori[,i],
+          main=names(indicatori)[i])
+}
+par(par)
+
+indicatori <- indicatori %>% 
+  mutate(DAB=log(DAB)) %>% 
+  rename(LDAB=DAB)
+```
+
+```{r , echo=F, warning=F, message=F, fig.align='center', fig.width=9, fig.height=9, cache=T}
+library(corrplot)
+
+M <- cor(indicatori[,5:ncol(indicatori)])
+
+corrplot.mixed(M, upper="ellipse",
+               order = "hclust")
+```
+
+Dalla matrice di correlazione degli indicatori si nota che questi sono fortemente correlati tra di loro. Questo può essere un grosso problema per l'individuazione delle variabili esplicative che maggiormente spiegano i risultati elettorali perché ci potrebbero essere problemi di multicollinearità tra le variabili.
+
+Siccome TSO e TSOFM hanno una correlazione molto forte ho deciso di rimuovere TSOFM.
+
+```{r , echo=F, warning=F, message=F}
+indicatori <- indicatori %>% 
+  dplyr::select(-TSOFM)
+
+correzioni_uni2 <- indicatori %>% 
+  dplyr::select(CAM17U_NOME) %>% 
+  anti_join(data_uni, by=c("CAM17U_NOME"="collegio")) %>% 
+  left_join(correzioni_uni, by=c("CAM17U_NOME"="CAM17U_NOM"))
+
+indicatori <- indicatori %>% 
+  left_join(correzioni_uni2) %>%
+  mutate(CAM17U_NOME=ifelse(!is.na(corr),corr,CAM17U_NOME)) %>% 
+  dplyr::select(-corr)
+
+# indicatori %>% 
+#   dplyr::select(1:4) %>% 
+#   anti_join(data_uni, by=c("CAM17U_NOME"="collegio"))
+# 
+# data_uni %>% 
+#   dplyr::select(1:2) %>% 
+#   anti_join(indicatori, by=c("collegio"="CAM17U_NOME"))
+
+correzioni_uni3 <- indicatori %>% 
+  dplyr::select(CAM17U_NOME) %>% 
+  anti_join(data_uni, by=c("CAM17U_NOME"="collegio"))
+
+corr=c("AOSTA",
+       "SAN DONA' DI PIAVE",
+       "GENOVA - UNITA' URBANISTICA SESTRI",
+       "BARI - CIRCOSCRIZIONE 8 LIBERTA-MARCONI-SAN GIROLAMO-FESCA")
+
+correzioni_uni3 <- correzioni_uni3 %>% 
+  mutate(corr)
+
+indicatori <- indicatori %>% 
+  left_join(correzioni_uni3, by="CAM17U_NOME") %>% 
+  mutate(CAM17U_NOME=ifelse(!is.na(corr), corr, CAM17U_NOME)) %>% 
+  dplyr::select(-corr)
+
+# Resta fuori solo valle d'Aosta che è esclusa dall'analisi
+indicatori <- indicatori %>%
+  rename(collegio=CAM17U_NOME)
+```
+
+
+Di seguito sono riportate le mappe con la distribuzione di alcuni degli indicatori che sono risultati particolarmente rilevanti nella regressione lineare.
+
+```{r mappeEsplicative, include=F, cache=T}
+source("script3.1_mappeEsplicative.R")
+```
+
+```{r mappeEplicativeDis1, echo=F, cache=T, fig.align='center', fig.height=4.5, fig.width=8}
+grid.arrange(p_ldab, p_iv,
+             nrow=1)
+```
+
+```{r mappeEplicativeDis2, echo=F, cache=T, fig.align='center', fig.height=4.5, fig.width=8}
+grid.arrange(p_aast, p_pdu, 
+             nrow=1)
+```
+
+```{r mappeEplicativeDis3, echo=F, cache=T, fig.align='center', fig.height=4.5, fig.width=8}
+grid.arrange(p_st, p_tso,
+             nrow=1)
+```
+
+```{r mappeEplicativeDis4, echo=F, cache=T, fig.align='center', fig.height=4.5, fig.width=8}
+grid.arrange(p_oss, p_edi,
+             nrow=1)
+```
+
+```{r mappeEplicativeDis5, echo=F, cache=T, fig.align='center', fig.height=4.5, fig.width=8}
+grid.arrange(p_nfr, p_ivms, 
+             nrow=1)
+```
+
+
+
+### Regressione su base nazionale
+
+Siccome i collegi di Bolzano, Merano e Bressanone sono punti influenti (hanno valori delle variabili esplicative particolarmente diversi rispetto a quelli degli altri collegi) e anomali (hanno dei risultati elettorali particolarmente diversi rispetto a quelli degli altri collegi), si è deciso di rimuoverli prima di effettuare la regressione.
+
+```{r , echo=F, warning=F, message=F}
+library(MASS)
+indicatori2 <- indicatori %>%
+  filter(!ID %in% c(18,56,57,58))
+```
+
+Di seguito sono riportati i modelli che meglio spiegano i voti della Lega, del Movimento 5 Stelle e del Partito Democratico.
+
+```{r , echo=F, warning=F, message=F}
+# Lega
+df_lega <- indicatori2 %>% 
+  dplyr::select(4:ncol(indicatori2)) %>% 
+  left_join(dplyr::select(data_uni, collegio, LEGA))
+row.names(df_lega) <- df_lega$collegio
+df_lega <- df_lega %>% 
+  dplyr::select(-collegio)
+
+fit_it_lega <- lm(data=df_lega, LEGA~ST+AAST+PDU+OSS+IVMS)
+
+# M5S
+df_m5s <- indicatori2 %>% 
+  dplyr::select(4:ncol(indicatori2)) %>% 
+  left_join(dplyr::select(data_uni, collegio, M5S))
+row.names(df_m5s) <- df_m5s$collegio
+df_m5s <- df_m5s %>% 
+  dplyr::select(-collegio)
+
+fit_it_m5s <- lm(data=df_m5s, M5S~ST+TSO+AAST+EDI+IVMS)
+
+# PD ####
+df_pd <- indicatori2 %>% 
+  dplyr::select(4:ncol(indicatori2)) %>% 
+  left_join(dplyr::select(data_uni, collegio, PD))
+row.names(df_pd) <- df_pd$collegio
+df_pd <- df_pd %>% 
+  dplyr::select(-collegio)
+
+fit_it_pd <- lm(data=df_pd, PD~TSO+AAST+PDU+EDI+IVMS)
+
+```
+
+```{r , echo=F}
+summary(fit_it_lega)
+summary(fit_it_m5s)
+summary(fit_it_pd)
+```
+
+Dai modelli di regressione lineare risulta che:
+
+* La Lega ottiene voti dove:
+    - ci sono tanti stranieri;
+    - ci sono pochi analfabeti;
+    - ci sono pochi laureati;
+    - ci sono pochi occupati nel settore dei servizi;
+    - la vulnerabilità materiale e sociale è bassa.
+* Il Movimento 5 Stelle ottiene voti dove:
+    - ci sono pochi stranieri;
+    - l'occupazione è bassa;
+    - ci sono tanti analfabeti;
+    - ci sono poche residenze antiche;
+    - la vulnerabilità materiale e sociale è alta.
+* Il Partito Democratico ottiene voti dove:
+    - l'occupazione è alta;
+    - ci sono tanti analfabeti;
+    - ci sono tanti laureati;
+    - ci sono tante residenze antiche;
+    - la vulnerabilità materiale e sociale è alta.
+
+Per quanto riguarda gli stranieri, gli analfabeti, l'occupazione e la vulnerabilità, si tratta di aspetti che caratterizzano il divario che c'è tra le regioni del Nord e quelle del Sud.
+Altre variabili come la presenza di laureati, l'occupazione nei servizi e la presenza di residenze antiche caratterizzano le differenze che vi sono tra le aree urbane e le province.
+
+Il problema delle variabili legate alle forti differenze geografiche tra Nord e Sud è che non permettono di capire se le differenze tra l'elettorato del Movimento 5 Stelle e quello della Lega siano veramente dovute a queste variabili di carattere socio-economico o se queste variabili siano solamente dei proxy che portano a [correlazioni spurie](http://www.tylervigen.com/spurious-correlations).
+
+### Regressione utilizzando solo le circoscrizioni del Nord
+
+Per neutralizzare l'effetto dell'appartenenza geografica e isolare le caratteristiche degli elettori, è stata condotta una seconda analisi di regressione lineare prendendo in considerazione solo le regioni del Nord, dove la Lega è particolarmente forte, ma vi è anche un'importante presenza del Movimento 5 Stelle e del Partito Democratico.
+Le regioni scelte sono state Piemonte, Lombardia, Veneto e Friuli - Venezia Giulia.
+
+```{r ,  include=F}
+indicatori_nord <- indicatori %>% 
+  filter(ID %in% c(1:17, 19:55, 62:85))
+
+# Lega
+df_nord_lega <- indicatori_nord %>% 
+  dplyr::select(4:ncol(indicatori_nord)) %>% 
+  left_join(dplyr::select(data_uni, collegio, LEGA))
+row.names(df_nord_lega) <- df_nord_lega$collegio
+df_nord_lega <- df_nord_lega %>% 
+  dplyr::select(-collegio)
+
+fit_nord_lega <- lm(data=df_nord_lega, LEGA~IV+ADDSP+OSS+POP_NFR)
+
+#M5S
+df_nord_m5s <- indicatori_nord %>% 
+  dplyr::select(4:ncol(indicatori_nord)) %>% 
+  left_join(dplyr::select(data_uni, collegio, M5S))
+row.names(df_nord_m5s) <- df_nord_m5s$collegio
+df_nord_m5s <- df_nord_m5s %>% 
+  dplyr::select(-collegio)
+
+fit_nord_m5s <- lm(data=df_nord_m5s, M5S~ST+AAST+PDU+OSS)
+
+#PD
+df_nord_pd <- indicatori_nord %>% 
+  dplyr::select(4:ncol(indicatori_nord)) %>% 
+  left_join(dplyr::select(data_uni, collegio, PD))
+row.names(df_nord_pd) <- df_nord_pd$collegio
+df_nord_pd <- df_nord_pd %>% 
+  dplyr::select(-collegio)
+
+fit_pd_tot <- lm(data=df_nord_pd, PD~.)
+fit_nord_pd <- stepAIC(fit_pd_tot, direction="both")
+
+```
+
+```{r , echo=F}
+summary(fit_nord_lega)
+summary(fit_nord_m5s)
+summary(fit_nord_pd)
+```
+
+Dai modelli di regressione lineare sulle sole regioni del Nord risulta che:
+
+* La Lega ottiene voti dove:
+    - ci sono pochi anziani;
+    - ci sono pochi addetti nei settori pubblici;
+    - ci sono pochi occupati nei servizi;
+    - ci sono pochi nati fuori regione.
+* Il Movimento 5 Stelle ottiene voti dove:
+    - ci sono pochi stranieri;
+    - ci sono tanti analfabeti;
+    - ci sono pochi laureati;
+    - ci sono tanti occupati nei servizi.
+* Il Partito Democratico ottiene voti dove:
+    - c'è un'alta densità abitativa;
+    - ci sono tanti anziani;
+    - la vulnerabilità materiale e sociale è alta;
+    - ci sono tanti laureati.
+
+Per quanto riguarda la densità abitativa, la presenza di anziani, la presenza di laureati e l'occupazione nei servizi, si tratta di aspetti che caratterizzano le differenze che vi sono tra le aree urbane e le province.
+
+La presenza di italiani nati fuori regione invece caratterizza il Piemonte che ha conosciuto una forte immigrazione interna dal dopoguerra in poi. La presenza di tanti meridionali potrebbe essere uno dei motivi per cui la Lega Nord di Umberto Bossi non sia riuscita a costruirsi una forte base elettorale come in Lombardia e Veneto, fatto che si riversa sugli attuali risultati elettorali della Lega di Matteo Salvini.
+
+Il risultato del Movimento 5 Stelle è più difficilmente interpretabile perché essendo un partito più giovane e senza una forte identità caratteristica tende a raccogliere trasversalmente i voti degli elettori insoddisfatti dei partiti tradizionali. Di conseguenza potrebbe essere semplicemente che il motivo dei suoi successi alle elezioni politiche sia da spiegare come un insuccesso degli altri partiti. Cioè nelle zone in cui la Lega non ha una forte presenza e negli ultimi anni si è diffuso un generale malcontento nei confronti del Partito Democratico, il Movimento 5 Stelle riesce a emergere ottenendo i voti degli insoddisfatti che cercano un cambiamento.
+
+# Conclusioni
+
+L'analisi dei risultati elettorali su base geografica non permette di capire con certezza quali siano le caratteristiche socio-economiche dell’elettorato dei diversi partiti, perché, come già osservato, si basa sull'analisi di dati aggregati. Può però fornire interessanti punti di partenza per ulteriori indagini politiche.
+
+Inoltre la statistica da sola fornisce solo correlazioni, non nessi di causa-effetto. Di conseguenza può essere utilizzata come analisi esplorativa o come verifica di ipotesi fatte a monte, ma senza una spiegazione di tipo sociologico non ha molto peso dal punto di vista scientifico.
+
+Questo problema si riscontra soprattutto nel tentativo di rispondere al quesito 5 (*Le zone geografiche sono solo un proxy per le caratteristiche socio-economiche degli elettori o da sole spiegano il voto degli elettori?*). Va però notato che dalla regressione lineare alcuni degli indicatori che distinguono le regioni del Nord dalle regioni del Sud risultati significativi nell'analisi su base nazionale, risultano non significativi limitando l'analisi alle regioni del Nord. Si potrebbe quindi pensare che non è la collocazione geografica un proxy per quelle caratteristiche della popolazione, ma sono quelle caratteristiche della popolazione a fare da proxy per la collocazione geografica.
+
